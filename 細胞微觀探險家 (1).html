@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>細胞微觀探險家 AR - 協作平台優化版</title>
+    <!-- 引入 MediaPipe 核心組件 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --primary: #22c55e;
+            --secondary: #3b82f6;
+            --accent: #f59e0b;
+            --bg-dark: #020617;
+            --panel-bg: rgba(15, 23, 42, 0.9);
+        }
+
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background: var(--bg-dark); color: white;
+            font-family: "PingFang TC", "Microsoft JhengHei", sans-serif;
+            overflow: hidden;
+        }
+
+        #app-container {
+            position: relative; width: 100vw; height: 100vh;
+            display: flex; justify-content: center; align-items: center;
+        }
+
+        video, canvas {
+            position: absolute; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1);
+        }
+
+        /* 啟動介面 - 解決協作平台權限攔截關鍵 */
+        #start-overlay {
+            position: absolute; inset: 0; z-index: 200;
+            background: radial-gradient(circle at center, #1e293b 0%, #020617 100%);
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            text-align: center; padding: 20px;
+            transition: opacity 0.5s ease;
+        }
+
+        .start-card {
+            background: var(--panel-bg);
+            padding: 40px; border-radius: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(20px);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+
+        .start-btn {
+            padding: 18px 50px; font-size: 1.4rem; font-weight: bold;
+            background: linear-gradient(135deg, var(--primary), #16a34a);
+            color: white; border: none;
+            border-radius: 50px; cursor: pointer;
+            box-shadow: 0 10px 25px rgba(34, 197, 94, 0.3);
+            transition: all 0.3s ease;
+            margin-top: 20px;
+        }
+        .start-btn:hover { transform: translateY(-3px); box-shadow: 0 15px 30px rgba(34, 197, 94, 0.5); }
+        .start-btn:active { transform: translateY(0); }
+
+        /* UI 配置 */
+        #ui-overlay {
+            position: absolute; inset: 0; z-index: 10;
+            pointer-events: none; display: flex; flex-direction: column; padding: 25px;
+        }
+
+        .header { display: flex; justify-content: space-between; align-items: flex-start; }
+
+        .glass-panel {
+            background: var(--panel-bg); backdrop-filter: blur(15px);
+            padding: 15px 25px; border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            pointer-events: auto;
+        }
+
+        .score-box { text-align: right; }
+        .stats-label { font-size: 0.8rem; opacity: 0.7; text-transform: uppercase; }
+        .stats-value { color: var(--primary); font-family: 'Courier New', monospace; font-size: 1.5rem; font-weight: bold; }
+
+        /* 知識小卡 */
+        #fact-card {
+            position: absolute; top: 120px; right: 25px; width: 280px;
+            opacity: 0; transform: translateX(30px);
+            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        #fact-card.show { opacity: 1; transform: translateX(0); }
+
+        /* 底部引導欄 */
+        .mission-container {
+            position: absolute; bottom: 50px; left: 0; right: 0;
+            display: flex; justify-content: center;
+        }
+        .mission-box {
+            width: 85%; max-width: 600px;
+            padding: 20px 30px; border-radius: 100px; text-align: center;
+            background: linear-gradient(90deg, rgba(34, 197, 94, 0.1), rgba(59, 130, 246, 0.1));
+            border: 2px solid var(--primary);
+            box-shadow: 0 0 30px rgba(34, 197, 94, 0.2);
+        }
+
+        #error-display {
+            color: #f87171; margin-top: 20px; display: none; 
+            font-size: 0.9rem; line-height: 1.6;
+            background: rgba(248, 113, 113, 0.1); padding: 15px; border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- 啟動遮罩：這是確保 Google Sites 能正常運行的關鍵 -->
+<div id="start-overlay">
+    <div class="start-card">
+        <h1 style="margin-bottom: 10px; letter-spacing: 5px;">細胞微觀探險家</h1>
+        <p style="opacity: 0.8; margin-bottom: 30px;">AR 體感互動教學系統</p>
+        <button class="start-btn" id="btn-init">進入實驗室</button>
+        <div id="error-display">
+            <strong>偵測到權限問題：</strong><br>
+            請確保使用 HTTPS 加密連線，並在瀏覽器網址列左側點擊「鎖頭」圖示，授權本網頁存取攝影機。
+        </div>
+    </div>
+</div>
+
+<div id="app-container">
+    <video id="input_video" autoplay playsinline style="display:none;"></video>
+    <canvas id="output_canvas"></canvas>
+    
+    <div id="ui-overlay">
+        <div class="header">
+            <div class="glass-panel">
+                <h2 style="margin:0; font-size: 1.2rem; color: var(--primary);">掃描狀態：運作中</h2>
+                <div style="font-size: 0.8rem; opacity: 0.6; margin-top: 4px;">MediaPipe 手勢引擎已就緒</div>
+            </div>
+            
+            <div class="glass-panel score-box">
+                <div class="stats-label">探索積分</div>
+                <div id="score" class="stats-value">000</div>
+            </div>
+        </div>
+
+        <div id="fact-card" class="glass-panel">
+            <div id="fact-title" style="color:var(--accent); font-size: 1.3rem; font-weight:bold; margin-bottom:10px;">胞器</div>
+            <div id="fact-body" style="font-size: 0.95rem; line-height: 1.6; color: #e2e8f0;">點擊胞器來查看詳細功能說明。</div>
+        </div>
+
+        <div class="mission-container">
+            <div class="mission-box glass-panel">
+                <div id="instruction" style="font-size: 1.3rem; font-weight: bold; letter-spacing: 1px;">正在初始化鏡頭...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const startOverlay = document.getElementById('start-overlay');
+    const btnInit = document.getElementById('btn-init');
+    const errorDisplay = document.getElementById('error-display');
+    
+    const instructionEl = document.getElementById('instruction');
+    const scoreEl = document.getElementById('score');
+    const factCardEl = document.getElementById('fact-card');
+    const factTitleEl = document.getElementById('fact-title');
+    const factBodyEl = document.getElementById('fact-body');
+
+    // 遊戲狀態
+    const state = {
+        phase: 'WAITING', // WAITING, DISCOVER
+        cell: { x: 0.5, y: 0.5, size: 220, rotation: 0 },
+        score: 0,
+        targetIdx: 0,
+        isTracking: false
+    };
+
+    // 胞器資料庫
+    const organelles = [
+        { name: '細胞核', x: 0, y: 0, r: 55, color: '#f87171', desc: '細胞的遺傳中心，含有 DNA，控制細胞的生長、發育與繁殖。' },
+        { name: '線粒體', x: 80, y: -70, r: 28, color: '#fb923c', desc: '細胞的發電廠，進行呼吸作用將養分轉換為能量（ATP）。' },
+        { name: '葉綠體', x: -90, y: 80, r: 32, color: '#4ade80', desc: '植物細胞特有，內含葉綠素，利用光能進行光合作用製造葡萄糖。' },
+        { name: '液胞', x: -70, y: -90, r: 45, color: '#60a5fa', desc: '儲存水分、廢物與養分。在成熟植物細胞中通常佔據極大空間。' },
+        { name: '內質網', x: 90, y: 60, r: 25, color: '#c084fc', desc: '負責蛋白質與脂質的合成與運輸，是細胞內的物質運輸網路。' }
+    ];
+
+    // 初始化 Hands 引擎
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+    });
+
+    // 啟動邏輯
+    btnInit.addEventListener('click', () => {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            errorDisplay.style.display = 'block';
+            return;
+        }
+
+        camera.start()
+            .then(() => {
+                startOverlay.style.opacity = '0';
+                setTimeout(() => startOverlay.style.display = 'none', 500);
+                state.phase = 'DISCOVER';
+                updateTarget();
+            })
+            .catch(err => {
+                console.error("Camera access denied:", err);
+                errorDisplay.style.display = 'block';
+            });
+    });
+
+    // 繪製細胞模型
+    function drawCellModel(ctx, centerX, centerY, size, rotation) {
+        ctx.save();
+        ctx.translate(centerX, centerY);
+        ctx.rotate(rotation);
+        
+        // 繪製細胞質 (底層)
+        const grad = ctx.createRadialGradient(0, 0, size*0.1, 0, 0, size);
+        grad.addColorStop(0, 'rgba(74, 222, 128, 0.2)');
+        grad.addColorStop(1, 'rgba(74, 222, 128, 0.05)');
+        
+        ctx.beginPath();
+        ctx.arc(0, 0, size, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        
+        // 繪製細胞膜 (外框)
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.setLineDash([10, 5]);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 繪製各個胞器
+        organelles.forEach((org, idx) => {
+            const ox = org.x * (size / 180);
+            const oy = org.y * (size / 180);
+            const or = org.r * (size / 220);
+
+            // 胞器本體
+            ctx.beginPath();
+            ctx.arc(ox, oy, or, 0, Math.PI * 2);
+            ctx.fillStyle = org.color;
+            ctx.globalAlpha = 0.85;
+            ctx.fill();
+            
+            // 亮點與陰影
+            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+            ctx.setLineDash([]);
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // 若為當前目標則增加發光特效
+            if (state.phase === 'DISCOVER' && idx === state.targetIdx) {
+                ctx.shadowBlur = 30;
+                ctx.shadowColor = org.color;
+                ctx.strokeStyle = '#ffffff';
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1.0;
+            ctx.shadowBlur = 0;
+        });
+        ctx.restore();
+    }
+
+    function onResults(results) {
+        const w = canvasElement.width = window.innerWidth;
+        const h = canvasElement.height = window.innerHeight;
+        
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, w, h);
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0];
+            
+            // 繪製手部關節
+            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 1});
+            drawLandmarks(canvasCtx, landmarks, {color: '#22c55e', radius: 2});
+
+            // 細胞跟隨手腕位置 (Landmark 0)
+            const wrist = landmarks[0];
+            state.cell.x = wrist.x;
+            state.cell.y = wrist.y;
+            state.isTracking = true;
+
+            // 進行碰撞偵測 (食指指尖 Landmark 8)
+            if (state.phase === 'DISCOVER') {
+                handleCollision(landmarks[8], w, h);
+            }
+        } else {
+            state.isTracking = false;
+        }
+
+        // 動畫邏輯
+        state.cell.rotation += 0.005;
+        
+        // 繪製主模型
+        drawCellModel(
+            canvasCtx, 
+            state.cell.x * w, 
+            state.cell.y * h, 
+            state.cell.size, 
+            state.cell.rotation
+        );
+
+        canvasCtx.restore();
+    }
+
+    function handleCollision(finger, w, h) {
+        const target = organelles[state.targetIdx];
+        const cx = state.cell.x * w;
+        const cy = state.cell.y * h;
+        
+        // 計算胞器旋轉後的相對座標
+        const cosR = Math.cos(state.cell.rotation);
+        const sinR = Math.sin(state.cell.rotation);
+        const rx = target.x * (state.cell.size / 180);
+        const ry = target.y * (state.cell.size / 180);
+        
+        const targetAbsX = cx + (rx * cosR - ry * sinR);
+        const targetAbsY = cy + (rx * sinR + ry * cosR);
+
+        // 食指座標
+        const fx = finger.x * w;
+        const fy = finger.y * h;
+
+        // 計算距離
+        const dist = Math.sqrt(Math.pow(fx - targetAbsX, 2) + Math.pow(fy - targetAbsY, 2));
+
+        if (dist < 50) { // 成功碰觸
+            state.score += 20;
+            scoreEl.innerText = state.score.toString().padStart(3, '0');
+            showFact(target);
+            updateTarget();
+            
+            // 簡單的反饋動畫 (細胞放大一下)
+            const originalSize = state.cell.size;
+            state.cell.size = 260;
+            setTimeout(() => state.cell.size = originalSize, 200);
+        }
+    }
+
+    function showFact(org) {
+        factTitleEl.innerText = org.name;
+        factBodyEl.innerText = org.desc;
+        factCardEl.classList.add('show');
+        
+        clearTimeout(window.factTimer);
+        window.factTimer = setTimeout(() => {
+            factCardEl.classList.remove('show');
+        }, 6000);
+    }
+
+    function updateTarget() {
+        state.targetIdx = Math.floor(Math.random() * organelles.length);
+        instructionEl.innerText = `請點擊：【${organelles[state.targetIdx].name}】`;
+    }
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+
+    // 視窗縮放處理
+    window.addEventListener('resize', () => {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+    });
+
+    // 防止移動端滾動干擾
+    document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+</script>
+</body>
+</html>
